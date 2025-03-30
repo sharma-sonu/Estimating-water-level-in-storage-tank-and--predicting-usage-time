@@ -1,0 +1,112 @@
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET    -1  // Reset pin not used
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+#define TRIG D6  // GPIO12
+#define ECHO D5  // GPIO14
+#define FLOW_SENSOR D7  // GPIO13 - Water Flow Sensor
+
+// Updated Tank details (in meters)
+const float tankHeight = 0.2;  // 20 cm = 0.2 m
+const float tankRadius = 0.08; // 16 cm diameter -> 8 cm radius = 0.08 m
+const float tankCapacity = 3.99; // Cylindrical Volume in liters (pi*r^2*h * 1000)
+
+volatile int pulseCount = 0;
+float flowRate = 0.0;
+float totalLitersUsed = 0.0;
+unsigned long oldTime = 0;
+
+void IRAM_ATTR countPulses() {
+    pulseCount++;
+}
+
+void setup() {
+    Serial.begin(115200);
+    pinMode(TRIG, OUTPUT);
+    pinMode(ECHO, INPUT);
+    pinMode(FLOW_SENSOR, INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(FLOW_SENSOR), countPulses, FALLING);
+    
+    if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+        Serial.println(F("SSD1306 allocation failed"));
+        for (;;);
+    }
+    display.clearDisplay();
+    display.display();
+    delay(2000);
+}
+
+void loop() {
+    // Measure Water Level
+    digitalWrite(TRIG, LOW);
+    delayMicroseconds(2);
+    digitalWrite(TRIG, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(TRIG, LOW);
+
+    long duration = pulseIn(ECHO, HIGH);
+    float distance = (duration * 0.0343) / 2;
+    float distance_m = distance / 100.0;
+
+    float waterLevel = tankHeight - distance_m;
+    if (waterLevel < 0) waterLevel = 0;
+    if (waterLevel > tankHeight) waterLevel = tankHeight;
+
+    float waterPercentage = (waterLevel / tankHeight) * 100.0;
+    float remainingLiters = (waterPercentage / 100.0) * tankCapacity;
+
+    // Measure Water Flow
+    if (millis() - oldTime > 1000) {
+        detachInterrupt(digitalPinToInterrupt(FLOW_SENSOR));
+        float pulseFactor = 7.5; // Pulses per liter
+        flowRate = pulseCount / pulseFactor;
+        totalLitersUsed += flowRate / 60.0;
+        pulseCount = 0;
+        oldTime = millis();
+        attachInterrupt(digitalPinToInterrupt(FLOW_SENSOR), countPulses, FALLING);
+    }
+
+    float remainingTime = (flowRate > 0) ? (remainingLiters / flowRate) * 60.0 : 0;
+
+    // Display on OLED
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(WHITE);
+
+    display.setCursor(5, 5);
+    display.print("Water Level:");
+    display.setCursor(5, 20);
+    display.print(waterPercentage, 1);
+    display.print("%");
+
+    display.setCursor(5, 40);
+    display.print("Time Left: ");
+    if (flowRate > 0) {
+        display.print(remainingTime, 1);
+        display.print(" min");
+    } else {
+        display.print("N/A");
+    }
+
+    display.display();
+
+    // Serial Output
+    Serial.print("Water Level: ");
+    Serial.print(waterLevel, 2);
+    Serial.print(" m (");
+    Serial.print(waterPercentage, 2);
+    Serial.print("%) | Remaining Time: ");
+    if (flowRate > 0) {
+        Serial.print(remainingTime, 1);
+        Serial.println(" min");
+    } else {
+        Serial.println(" N/A");
+    }
+
+    delay(2000);
+}
